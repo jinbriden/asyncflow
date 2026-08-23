@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: AsyncFlow
+    orgId: 1
+    folder: AsyncFlow
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards

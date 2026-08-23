@@ -1,0 +1,73 @@
+spring:
+  application:
+    name: asyncflow
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/asyncflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${MYSQL_USER:asyncflow}
+    password: ${MYSQL_PASSWORD:asyncflow}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+      repositories:
+        enabled: false
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:asyncflow}
+    password: ${RABBITMQ_PASSWORD:asyncflow}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: auto
+        default-requeue-rejected: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+logging:
+  pattern:
+    level: "%5p [traceId=%X{traceId:-}]"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: asyncflow
+
+asyncflow:
+  internal-token: ${ASYNCFLOW_INTERNAL_TOKEN:change-me}
+  outbox:
+    enabled: true
+    scheduler-enabled: true
+    batch-size: 50
+    poll-interval: 500
+    confirm-timeout: 2000
+  consumer:
+    concurrency: 2
+  scanner:
+    enabled: true
+    interval: 30000
+    stale-after: PT2M
+  downstream:
+    base-url: ${DOWNSTREAM_URL:http://localhost:18089}
+    timeout: PT1S
+  report:
+    storage-directory: ${REPORT_STORAGE_DIR:./data/reports}

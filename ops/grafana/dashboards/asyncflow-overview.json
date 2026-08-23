@@ -1,0 +1,44 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Task submissions / min",
+      "targets": [{"expr": "rate(asyncflow_tasks_submitted_total[1m]) * 60", "legendFormat": "submitted"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Processing results",
+      "targets": [{"expr": "sum by (result) (rate(asyncflow_tasks_processed_total[1m]))", "legendFormat": "{{result}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP P95 / P99",
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))", "legendFormat": "P95"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))", "legendFormat": "P99"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries, dead letters, stale recovery",
+      "targets": [
+        {"expr": "asyncflow_tasks_processed_total{result=\"retry\"}", "legendFormat": "retry"},
+        {"expr": "asyncflow_tasks_processed_total{result=\"dead_letter\"}", "legendFormat": "dead"},
+        {"expr": "asyncflow_tasks_stale_recovered_total", "legendFormat": "stale recovered"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ],
+  "schemaVersion": 41,
+  "tags": ["asyncflow", "quality"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "title": "AsyncFlow Reliability Overview",
+  "uid": "asyncflow-overview",
+  "version": 1
+}

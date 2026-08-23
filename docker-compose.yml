@@ -1,0 +1,99 @@
+services:
+  asyncflow:
+    build: .
+    restart: "on-failure:3"
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/asyncflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      MYSQL_USER: asyncflow
+      MYSQL_PASSWORD: asyncflow
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: asyncflow
+      RABBITMQ_PASSWORD: asyncflow
+      ASYNCFLOW_INTERNAL_TOKEN: local-admin-token
+      REPORT_STORAGE_DIR: /app/data/reports
+    ports:
+      - "8080:8080"
+    volumes:
+      - report-data:/app/data/reports
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: asyncflow
+      MYSQL_USER: asyncflow
+      MYSQL_PASSWORD: asyncflow
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: asyncflow
+      RABBITMQ_DEFAULT_PASS: asyncflow
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      asyncflow:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: asyncflow
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  mysql-data:
+  report-data:

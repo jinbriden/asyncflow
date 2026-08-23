@@ -1,0 +1,61 @@
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Runtime data and generated reports
+/data/
+*.jtl
+allure-results/
+allure-report/
+hs_err_pid*
+replay_pid*
+
+# Secrets and machine-local config
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.yaml
+*.pem
+*.p12
+*.jks
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.factorypath
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Logs
+*.log
+logs/
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+!**/src/**/lib/*.jar
