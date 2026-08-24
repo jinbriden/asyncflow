@@ -25,4 +25,22 @@ public final class ReportTestDataFactory {
                 }
                 """.formatted(reportName);
     }
+
+    public static String emptyRecordsBody() {
+        return """
+                {"type":"REPORT","payload":{"reportName":"empty","requestedBy":"qa@example.com","records":[]}}
+                """;
+    }
+
+    public static String blankTypeBody() {
+        return "{\"type\":\"\",\"payload\":{}}";
+    }
+
+    public static String zeroMaxAttemptsBody() {
+        return "{\"type\":\"REPORT\",\"payload\":{},\"maxAttempts\":0}";
+    }
+
+    public static String excessiveFailureInjectionBody() {
+        return "{\"type\":\"REPORT\",\"payload\":{},\"simulateFailures\":11}";
+    }
 }

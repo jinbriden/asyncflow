@@ -28,6 +28,7 @@ import java.nio.file.Path;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import static io.github.asyncflow.framework.ReportTestDataFactory.emptyRecordsBody;
 import static io.github.asyncflow.framework.ReportTestDataFactory.validReportBody;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -110,10 +111,7 @@ class ReportBusinessFlowIntegrationTest {
 
     @Test
     void malformedReportIsRejectedBeforeTaskCreation() {
-        String body = """
-                {"type":"REPORT","payload":{"reportName":"empty","requestedBy":"qa@example.com","records":[]}}
-                """;
-        Response response = api.submit(key(), body);
+        Response response = api.submit(key(), emptyRecordsBody());
         response.then().statusCode(400);
         assertThat(response.path("code").toString()).isEqualTo("INVALID_REPORT_PAYLOAD");
         assertThat(tasks.count()).isZero();

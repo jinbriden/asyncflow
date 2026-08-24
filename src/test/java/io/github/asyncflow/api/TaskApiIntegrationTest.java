@@ -1,12 +1,10 @@
 package io.github.asyncflow.api;
 
 import io.github.asyncflow.domain.TaskRecord;
-import io.github.asyncflow.domain.TaskStatus;
+import io.github.asyncflow.framework.AsyncFlowApiClient;
 import io.github.asyncflow.repository.OutboxEventRepository;
 import io.github.asyncflow.repository.TaskEventRepository;
 import io.github.asyncflow.repository.TaskRepository;
-import io.restassured.RestAssured;
-import io.restassured.http.ContentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -19,12 +17,14 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.UUID;
 
-import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
+import static io.github.asyncflow.framework.ReportTestDataFactory.blankTypeBody;
+import static io.github.asyncflow.framework.ReportTestDataFactory.excessiveFailureInjectionBody;
 import static io.github.asyncflow.framework.ReportTestDataFactory.validReportBody;
+import static io.github.asyncflow.framework.ReportTestDataFactory.zeroMaxAttemptsBody;
 
 @Tag("regression")
 @ActiveProfiles("test")
@@ -39,9 +39,11 @@ class TaskApiIntegrationTest {
 
     @MockitoBean RabbitTemplate rabbit;
 
+    private AsyncFlowApiClient api;
+
     @BeforeEach
     void setUp() {
-        RestAssured.port = port;
+        api = new AsyncFlowApiClient(port);
         events.deleteAll();
         outbox.deleteAll();
         tasks.deleteAll();
@@ -50,9 +52,7 @@ class TaskApiIntegrationTest {
     @Test
     @Tag("smoke")
     void submitReturnsAcceptedAndLocation() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body(validBody())
-        .when().post("/api/tasks")
+        api.submit(key(), validBody())
         .then().statusCode(202)
                 .header("Location", org.hamcrest.Matchers.startsWith("/api/tasks/"))
                 .body("taskId", notNullValue())
@@ -64,8 +64,7 @@ class TaskApiIntegrationTest {
     void repeatedRequestReturnsSameTask() {
         String key = key();
         String taskId = submit(key);
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key).body(validBody())
-                .when().post("/api/tasks")
+        api.submit(key, validBody())
                 .then().statusCode(200).body("taskId", equalTo(taskId)).body("deduplicated", equalTo(true));
         org.assertj.core.api.Assertions.assertThat(tasks.count()).isEqualTo(1);
     }
@@ -73,64 +72,58 @@ class TaskApiIntegrationTest {
     @Test
     void queryReturnsPersistedState() {
         String taskId = submit(key());
-        given().when().get("/api/tasks/{id}", taskId)
+        api.getTask(taskId)
                 .then().statusCode(200).body("taskId", equalTo(taskId)).body("attemptCount", equalTo(0));
     }
 
     @Test
     void unknownTaskReturnsStructured404() {
-        given().when().get("/api/tasks/missing")
+        api.getTask("missing")
                 .then().statusCode(404).body("code", equalTo("TASK_NOT_FOUND"));
     }
 
     @Test
     void missingIdempotencyKeyIsRejected() {
-        given().contentType(ContentType.JSON).body(validBody())
-                .when().post("/api/tasks").then().statusCode(400);
+        api.submit(null, validBody()).then().statusCode(400);
     }
 
     @Test
     void blankTaskTypeIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"\",\"payload\":{}}")
-                .when().post("/api/tasks").then().statusCode(400)
+        api.submit(key(), blankTypeBody())
+                .then().statusCode(400)
                 .body("code", equalTo("VALIDATION_FAILED"));
     }
 
     @Test
     void zeroMaxAttemptsIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"REPORT\",\"payload\":{},\"maxAttempts\":0}")
-                .when().post("/api/tasks").then().statusCode(400);
+        api.submit(key(), zeroMaxAttemptsBody()).then().statusCode(400);
     }
 
     @Test
     void excessiveFailureInjectionIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"REPORT\",\"payload\":{},\"simulateFailures\":11}")
-                .when().post("/api/tasks").then().statusCode(400);
+        api.submit(key(), excessiveFailureInjectionBody()).then().statusCode(400);
     }
 
     @Test
     void createdTaskCanBeCancelled() {
         String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId)
+        api.cancel(taskId)
                 .then().statusCode(200).body("status", equalTo("CANCELLED"));
     }
 
     @Test
     void cancellingTerminalTaskReturnsConflict() {
         String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().when().post("/api/tasks/{id}/cancel", taskId)
+        api.cancel(taskId).then().statusCode(200);
+        api.cancel(taskId)
                 .then().statusCode(409).body("code", equalTo("INVALID_TASK_STATE"));
     }
 
     @Test
     void eventTimelineIsAppendOnlyAndOrdered() {
         String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().when().get("/api/tasks/{id}/events", taskId)
+        api.cancel(taskId).then().statusCode(200);
+        api.events(taskId)
                 .then().statusCode(200).body("$", hasSize(2))
                 .body("[0].toStatus", equalTo("CREATED"))
                 .body("[1].toStatus", equalTo("CANCELLED"));
@@ -139,8 +132,8 @@ class TaskApiIntegrationTest {
     @Test
     void listCanFilterByStatus() {
         String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().queryParam("status", "CANCELLED").when().get("/api/tasks")
+        api.cancel(taskId).then().statusCode(200);
+        api.listTasksByStatus("CANCELLED")
                 .then().statusCode(200).body("page.totalElements", equalTo(1));
     }
 
@@ -148,7 +141,7 @@ class TaskApiIntegrationTest {
     void internalRetryRequeuesDeadTask() {
         TaskRecord task = deadTask();
         tasks.save(task);
-        given().header("X-Internal-Token", "change-me").when().post("/internal/tasks/{id}/retry", task.getTaskId())
+        api.retry(task.getTaskId(), "change-me")
                 .then().statusCode(200).body("status", equalTo("QUEUED"));
     }
 
@@ -156,7 +149,7 @@ class TaskApiIntegrationTest {
     void internalRetryRequiresToken() {
         TaskRecord task = deadTask();
         tasks.save(task);
-        given().when().post("/internal/tasks/{id}/retry", task.getTaskId())
+        api.retry(task.getTaskId(), null)
                 .then().statusCode(401).body("code", equalTo("UNAUTHORIZED"));
     }
 
@@ -164,27 +157,25 @@ class TaskApiIntegrationTest {
     void compensationClosesDeadTask() {
         TaskRecord task = deadTask();
         tasks.save(task);
-        given().when().post("/api/tasks/{id}/compensate", task.getTaskId())
+        api.compensate(task.getTaskId())
                 .then().statusCode(200).body("status", equalTo("COMPENSATED"));
     }
 
     @Test
     void pageSizeIsBoundedButNeverZero() {
         submit(key());
-        given().queryParam("size", 0).when().get("/api/tasks")
+        api.listTasksBySize(0)
                 .then().statusCode(200).body("page.size", greaterThanOrEqualTo(1));
     }
 
     @Test
     void traceIdIsEchoedForFailureEvidenceCorrelation() {
-        given().header("X-Trace-Id", "trace-integration-001")
-                .when().get("/api/tasks/missing")
+        api.getTask("missing", "trace-integration-001")
                 .then().statusCode(404).header("X-Trace-Id", equalTo("trace-integration-001"));
     }
 
     private String submit(String key) {
-        return given().contentType(ContentType.JSON).header("Idempotency-Key", key).body(validBody())
-                .when().post("/api/tasks").then().statusCode(202).extract().path("taskId");
+        return api.submit(key, validBody()).then().statusCode(202).extract().path("taskId");
     }
 
     private TaskRecord deadTask() {
