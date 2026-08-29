@@ -1,0 +1,20 @@
+[
+  {
+    "name": "blankTaskTypeIsRejected",
+    "factoryMethod": "blankTypeBody",
+    "status": 400,
+    "code": "VALIDATION_FAILED"
+  },
+  {
+    "name": "zeroMaxAttemptsIsRejected",
+    "factoryMethod": "zeroMaxAttemptsBody",
+    "status": 400,
+    "code": null
+  },
+  {
+    "name": "excessiveFailureInjectionIsRejected",
+    "factoryMethod": "excessiveFailureInjectionBody",
+    "status": 400,
+    "code": null
+  }
+]
