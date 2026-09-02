@@ -1,15 +1,24 @@
 package io.github.asyncflow.api;
 
 import io.github.asyncflow.domain.TaskRecord;
-import io.github.asyncflow.domain.TaskStatus;
+import io.github.asyncflow.framework.assertion.ApiAssertions;
+import io.github.asyncflow.framework.assertion.StoreAssertions;
+import io.github.asyncflow.framework.client.AsyncFlowApiClient;
+import io.github.asyncflow.framework.client.StoreClient;
+import io.github.asyncflow.framework.data.ReportTestDataFactory;
+import io.github.asyncflow.framework.data.TaskFixtures;
+import io.github.asyncflow.framework.extension.AsyncFlowSupport;
+import io.github.asyncflow.framework.scenario.TaskApiScenario;
+import io.github.asyncflow.report.ReportResultRepository;
 import io.github.asyncflow.repository.OutboxEventRepository;
 import io.github.asyncflow.repository.TaskEventRepository;
 import io.github.asyncflow.repository.TaskRepository;
-import io.restassured.RestAssured;
-import io.restassured.http.ContentType;
+import io.restassured.response.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,16 +26,12 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import java.util.UUID;
-
-import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.notNullValue;
-import static io.github.asyncflow.framework.ReportTestDataFactory.validReportBody;
+import static io.github.asyncflow.framework.client.AsyncFlowApiClient.DEFAULT_INTERNAL_TOKEN;
+import static io.github.asyncflow.framework.data.ReportTestDataFactory.validReportBody;
+import static io.github.asyncflow.framework.data.TaskFixtures.TRACE_ID;
 
 @Tag("regression")
+@AsyncFlowSupport
 @ActiveProfiles("test")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class TaskApiIntegrationTest {
@@ -36,167 +41,120 @@ class TaskApiIntegrationTest {
     @Autowired TaskRepository tasks;
     @Autowired TaskEventRepository events;
     @Autowired OutboxEventRepository outbox;
+    @Autowired ReportResultRepository reports;
 
     @MockitoBean RabbitTemplate rabbit;
 
+    private AsyncFlowApiClient api;
+    private StoreClient store;
+    private TaskApiScenario scenario;
+
     @BeforeEach
     void setUp() {
-        RestAssured.port = port;
-        events.deleteAll();
-        outbox.deleteAll();
-        tasks.deleteAll();
+        api = new AsyncFlowApiClient(port);
+        store = new StoreClient(tasks, events, outbox, reports);
+        scenario = new TaskApiScenario(api, store);
     }
 
     @Test
     @Tag("smoke")
     void submitReturnsAcceptedAndLocation() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body(validBody())
-        .when().post("/api/tasks")
-        .then().statusCode(202)
-                .header("Location", org.hamcrest.Matchers.startsWith("/api/tasks/"))
-                .body("taskId", notNullValue())
-                .body("status", equalTo("CREATED"))
-                .body("deduplicated", equalTo(false));
+        ApiAssertions.assertAccepted(api.submit(key(), validBody()));
     }
 
     @Test
     void repeatedRequestReturnsSameTask() {
         String key = key();
-        String taskId = submit(key);
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key).body(validBody())
-                .when().post("/api/tasks")
-                .then().statusCode(200).body("taskId", equalTo(taskId)).body("deduplicated", equalTo(true));
-        org.assertj.core.api.Assertions.assertThat(tasks.count()).isEqualTo(1);
+        String taskId = scenario.submitCreated(key, validBody());
+        ApiAssertions.assertDeduplicated(api.submit(key, validBody()), taskId);
+        StoreAssertions.assertTaskCount(store, 1);
     }
 
     @Test
     void queryReturnsPersistedState() {
-        String taskId = submit(key());
-        given().when().get("/api/tasks/{id}", taskId)
-                .then().statusCode(200).body("taskId", equalTo(taskId)).body("attemptCount", equalTo(0));
+        String taskId = scenario.submitCreated(key(), validBody());
+        ApiAssertions.assertTask(api.getTask(taskId), taskId, 0);
     }
 
     @Test
     void unknownTaskReturnsStructured404() {
-        given().when().get("/api/tasks/missing")
-                .then().statusCode(404).body("code", equalTo("TASK_NOT_FOUND"));
+        ApiAssertions.assertErrorCode(api.getTask("missing"), 404, "TASK_NOT_FOUND");
     }
 
     @Test
     void missingIdempotencyKeyIsRejected() {
-        given().contentType(ContentType.JSON).body(validBody())
-                .when().post("/api/tasks").then().statusCode(400);
+        ApiAssertions.assertStatus(api.submit(null, validBody()), 400);
     }
 
-    @Test
-    void blankTaskTypeIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"\",\"payload\":{}}")
-                .when().post("/api/tasks").then().statusCode(400)
-                .body("code", equalTo("VALIDATION_FAILED"));
-    }
-
-    @Test
-    void zeroMaxAttemptsIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"REPORT\",\"payload\":{},\"maxAttempts\":0}")
-                .when().post("/api/tasks").then().statusCode(400);
-    }
-
-    @Test
-    void excessiveFailureInjectionIsRejected() {
-        given().contentType(ContentType.JSON).header("Idempotency-Key", key())
-                .body("{\"type\":\"REPORT\",\"payload\":{},\"simulateFailures\":11}")
-                .when().post("/api/tasks").then().statusCode(400);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("io.github.asyncflow.framework.cases.CaseLoader#submitValidation")
+    void submitIsRejectedForInvalidPayload(String name, String body, int status, String code) {
+        Response response = api.submit(key(), body);
+        if (code == null) {
+            ApiAssertions.assertStatus(response, status);
+        } else {
+            ApiAssertions.assertErrorCode(response, status, code);
+        }
     }
 
     @Test
     void createdTaskCanBeCancelled() {
-        String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId)
-                .then().statusCode(200).body("status", equalTo("CANCELLED"));
+        String taskId = scenario.submitCreated(key(), validBody());
+        ApiAssertions.assertCancelled(api.cancel(taskId));
     }
 
     @Test
     void cancellingTerminalTaskReturnsConflict() {
-        String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().when().post("/api/tasks/{id}/cancel", taskId)
-                .then().statusCode(409).body("code", equalTo("INVALID_TASK_STATE"));
+        String taskId = scenario.submitThenCancel(key(), validBody());
+        ApiAssertions.assertErrorCode(api.cancel(taskId), 409, "INVALID_TASK_STATE");
     }
 
     @Test
     void eventTimelineIsAppendOnlyAndOrdered() {
-        String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().when().get("/api/tasks/{id}/events", taskId)
-                .then().statusCode(200).body("$", hasSize(2))
-                .body("[0].toStatus", equalTo("CREATED"))
-                .body("[1].toStatus", equalTo("CANCELLED"));
+        String taskId = scenario.submitThenCancel(key(), validBody());
+        ApiAssertions.assertCreatedThenCancelledEvents(api.events(taskId));
     }
 
     @Test
     void listCanFilterByStatus() {
-        String taskId = submit(key());
-        given().when().post("/api/tasks/{id}/cancel", taskId).then().statusCode(200);
-        given().queryParam("status", "CANCELLED").when().get("/api/tasks")
-                .then().statusCode(200).body("page.totalElements", equalTo(1));
+        scenario.submitThenCancel(key(), validBody());
+        ApiAssertions.assertListTotal(api.listTasksByStatus("CANCELLED"), 1);
     }
 
     @Test
     void internalRetryRequeuesDeadTask() {
-        TaskRecord task = deadTask();
-        tasks.save(task);
-        given().header("X-Internal-Token", "change-me").when().post("/internal/tasks/{id}/retry", task.getTaskId())
-                .then().statusCode(200).body("status", equalTo("QUEUED"));
+        TaskRecord task = scenario.saveDeadTask(key());
+        ApiAssertions.assertQueued(api.retry(task.getTaskId(), DEFAULT_INTERNAL_TOKEN));
     }
 
     @Test
     void internalRetryRequiresToken() {
-        TaskRecord task = deadTask();
-        tasks.save(task);
-        given().when().post("/internal/tasks/{id}/retry", task.getTaskId())
-                .then().statusCode(401).body("code", equalTo("UNAUTHORIZED"));
+        TaskRecord task = scenario.saveDeadTask(key());
+        ApiAssertions.assertErrorCode(api.retry(task.getTaskId(), null), 401, "UNAUTHORIZED");
     }
 
     @Test
     void compensationClosesDeadTask() {
-        TaskRecord task = deadTask();
-        tasks.save(task);
-        given().when().post("/api/tasks/{id}/compensate", task.getTaskId())
-                .then().statusCode(200).body("status", equalTo("COMPENSATED"));
+        TaskRecord task = scenario.saveDeadTask(key());
+        ApiAssertions.assertCompensated(api.compensate(task.getTaskId()));
     }
 
     @Test
     void pageSizeIsBoundedButNeverZero() {
-        submit(key());
-        given().queryParam("size", 0).when().get("/api/tasks")
-                .then().statusCode(200).body("page.size", greaterThanOrEqualTo(1));
+        scenario.submitCreated(key(), validBody());
+        ApiAssertions.assertPageSizeAtLeast(api.listTasksBySize(0), 1);
     }
 
     @Test
     void traceIdIsEchoedForFailureEvidenceCorrelation() {
-        given().header("X-Trace-Id", "trace-integration-001")
-                .when().get("/api/tasks/missing")
-                .then().statusCode(404).header("X-Trace-Id", equalTo("trace-integration-001"));
+        ApiAssertions.assertTraceId(api.getTask("missing", TRACE_ID), 404, TRACE_ID);
     }
 
-    private String submit(String key) {
-        return given().contentType(ContentType.JSON).header("Idempotency-Key", key).body(validBody())
-                .when().post("/api/tasks").then().statusCode(202).extract().path("taskId");
+    private String key() {
+        return TaskFixtures.key("it-");
     }
 
-    private TaskRecord deadTask() {
-        TaskRecord task = TaskRecord.create(key(), "REPORT", "{\"runId\":\"dead\"}", 1, 1);
-        task.queue();
-        task.beginAttempt();
-        task.markDeadLettered("injected");
-        return task;
-    }
-
-    private String key() { return "it-" + UUID.randomUUID(); }
     private String validBody() {
-        return validReportBody("integration-report");
+        return validReportBody(ReportTestDataFactory.INTEGRATION_REPORT_NAME);
     }
 }

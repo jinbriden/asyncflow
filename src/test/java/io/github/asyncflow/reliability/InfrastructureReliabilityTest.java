@@ -1,19 +1,23 @@
 package io.github.asyncflow.reliability;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
-import io.github.asyncflow.api.CreateTaskRequest;
 import io.github.asyncflow.domain.OutboxEvent;
 import io.github.asyncflow.domain.TaskRecord;
 import io.github.asyncflow.domain.TaskStatus;
+import io.github.asyncflow.framework.assertion.ApiAssertions;
+import io.github.asyncflow.framework.client.AsyncFlowApiClient;
+import io.github.asyncflow.framework.data.ReportTestDataFactory;
+import io.github.asyncflow.framework.data.TaskFixtures;
+import io.github.asyncflow.framework.extension.AsyncFlowSupport;
+import io.github.asyncflow.framework.scenario.WorkerScenario;
 import io.github.asyncflow.messaging.OutboxPublisher;
-import io.github.asyncflow.messaging.TaskMessage;
 import io.github.asyncflow.repository.OutboxEventRepository;
 import io.github.asyncflow.repository.TaskRepository;
 import io.github.asyncflow.service.TaskProcessor;
-import io.github.asyncflow.service.TaskSubmissionService;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -27,7 +31,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Duration;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -40,9 +43,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 @Tag("reliability")
+@AsyncFlowSupport
 @ActiveProfiles("container")
 @Testcontainers(disabledWithoutDocker = true)
-@SpringBootTest(properties = {
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "asyncflow.scanner.enabled=false",
         "asyncflow.outbox.scheduler-enabled=false",
@@ -73,12 +77,14 @@ class InfrastructureReliabilityTest {
     private static ToxiproxyContainer.ContainerProxy redisProxy;
     private static ToxiproxyContainer.ContainerProxy rabbitProxy;
 
-    @Autowired TaskSubmissionService submissions;
+    @LocalServerPort int port;
     @Autowired TaskProcessor processor;
     @Autowired TaskRepository tasks;
     @Autowired OutboxEventRepository outbox;
     @Autowired OutboxPublisher outboxPublisher;
-    @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
+
+    private AsyncFlowApiClient api;
+    private WorkerScenario worker;
 
     @DynamicPropertySource
     static void infrastructure(DynamicPropertyRegistry registry) {
@@ -108,6 +114,12 @@ class InfrastructureReliabilityTest {
         });
     }
 
+    @BeforeEach
+    void wireFramework() {
+        api = new AsyncFlowApiClient(port);
+        worker = new WorkerScenario(tasks, processor);
+    }
+
     @AfterEach
     void restoreNetwork() {
         mysqlProxy().setConnectionCut(false);
@@ -132,10 +144,10 @@ class InfrastructureReliabilityTest {
 
     @Test
     void realRedisAndDatabaseDeduplicateRepeatedRequest() throws Exception {
-        String key = unique("redis-idempotency");
-        CreateTaskRequest request = request("REPORT", 3, 0);
-        String first = submissions.submit(key, request).taskId();
-        String second = submissions.submit(key, request).taskId();
+        String key = TaskFixtures.key("redis-idempotency-");
+        String body = ReportTestDataFactory.containerReportBody();
+        String first = ApiAssertions.taskId(api.submit(key, body));
+        String second = ApiAssertions.taskId(api.submit(key, body));
         assertThat(second).isEqualTo(first);
         assertThat(tasks.findByIdempotencyKey(key)).isPresent();
     }
@@ -143,8 +155,8 @@ class InfrastructureReliabilityTest {
     @Test
     void redisOutageFallsBackToDatabaseAuthority() throws Exception {
         redisProxy().setConnectionCut(true);
-        String key = unique("redis-down");
-        String taskId = submissions.submit(key, request("REPORT", 3, 0)).taskId();
+        String key = TaskFixtures.key("redis-down-");
+        String taskId = ApiAssertions.taskId(api.submit(key, ReportTestDataFactory.containerReportBody()));
         assertThat(tasks.findById(taskId)).isPresent();
     }
 
@@ -155,10 +167,9 @@ class InfrastructureReliabilityTest {
             threadMode = Timeout.ThreadMode.SEPARATE_THREAD
     )
     void rabbitOutageLeavesOutboxPendingThenRecovers() throws Exception {
-        String taskId = submissions.submit(
-                unique("rabbit-down"),
-                request("REPORT", 3, 0)
-        ).taskId();
+        String taskId = ApiAssertions.taskId(api.submit(
+                TaskFixtures.key("rabbit-down-"),
+                ReportTestDataFactory.containerReportBody()));
 
         rabbitProxy().setConnectionCut(true);
 
@@ -227,10 +238,10 @@ class InfrastructureReliabilityTest {
                 .willSetStateTo("healthy").willReturn(aResponse().withFixedDelay(800).withStatus(200)));
         WIREMOCK.stubFor(post(urlEqualTo("/execute")).inScenario("flaky").whenScenarioStateIs("healthy")
                 .willReturn(aResponse().withStatus(204)));
-        TaskRecord task = queuedTask("CALLBACK", 3, 0, "{\"runId\":\"wiremock\"}");
-        processor.process(new TaskMessage(task.getTaskId()));
-        processor.process(new TaskMessage(task.getTaskId()));
-        processor.process(new TaskMessage(task.getTaskId()));
+        TaskRecord task = queuedTask("CALLBACK", 3, 0, TaskFixtures.WIREMOCK_PAYLOAD);
+        worker.process(task.getTaskId());
+        worker.process(task.getTaskId());
+        worker.process(task.getTaskId());
         TaskRecord completed = tasks.findById(task.getTaskId()).orElseThrow();
         assertThat(completed.getStatus()).isEqualTo(TaskStatus.SUCCEEDED);
         assertThat(completed.getAttemptCount()).isEqualTo(3);
@@ -239,28 +250,17 @@ class InfrastructureReliabilityTest {
 
     @Test
     void persistentBusinessFailureEndsInDeadState() {
-        TaskRecord task = queuedTask("REPORT", 2, 0, "{\"forcePermanentFailure\":true}");
-        processor.process(new TaskMessage(task.getTaskId()));
-        processor.process(new TaskMessage(task.getTaskId()));
+        TaskRecord task = queuedTask("REPORT", 2, 0, TaskFixtures.PERMANENT_FAILURE_PAYLOAD);
+        worker.process(task.getTaskId());
+        worker.process(task.getTaskId());
         TaskRecord failed = tasks.findById(task.getTaskId()).orElseThrow();
         assertThat(failed.getStatus()).isEqualTo(TaskStatus.DEAD);
         assertThat(failed.getFailureReason()).contains("Permanent business failure");
     }
 
-    private CreateTaskRequest request(String type, int maxAttempts, int failures) throws Exception {
-        String payload = "REPORT".equals(type)
-                ? "{\"reportName\":\"container-report\",\"requestedBy\":\"qa@example.com\",\"records\":[{\"orderId\":\"SO-C1\",\"region\":\"East\",\"product\":\"Keyboard\",\"quantity\":1,\"unitPrice\":199.50}]}"
-                : "{\"runId\":\"container\"}";
-        return new CreateTaskRequest(type, mapper.readTree(payload), maxAttempts, failures);
-    }
-
     private TaskRecord queuedTask(String type, int maxAttempts, int failures, String payload) {
-        TaskRecord task = TaskRecord.create(unique("worker"), type, payload, maxAttempts, failures);
-        task.queue();
-        return tasks.save(task);
+        return tasks.save(TaskFixtures.queued(TaskFixtures.key("worker-"), type, payload, maxAttempts, failures));
     }
-
-    private static String unique(String prefix) { return prefix + "-" + UUID.randomUUID(); }
 
     private static synchronized ToxiproxyContainer.ContainerProxy mysqlProxy() {
         if (mysqlProxy == null) mysqlProxy = TOXI.getProxy(MYSQL, 3306);
