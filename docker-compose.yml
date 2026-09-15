@@ -58,9 +58,11 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.1-management-alpine
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: asyncflow
       RABBITMQ_DEFAULT_PASS: asyncflow
+      RABBITMQ_NODENAME: rabbit@rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -69,6 +71,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
 
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -96,4 +100,5 @@ services:
 
 volumes:
   mysql-data:
+  rabbitmq-data:
   report-data:
