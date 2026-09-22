@@ -8,6 +8,7 @@ import io.github.asyncflow.repository.TaskRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.domain.Pageable;
 
@@ -44,9 +45,19 @@ class StaleTaskScannerTest {
         TaskRecord task = runningTask(3);
         when(tasks.findByStatusAndUpdatedAtBefore(eq(TaskStatus.RUNNING), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(task));
+        Instant scanStarted = Instant.now();
 
         scanner.recoverStaleRunningTasks();
 
+        Instant scanFinished = Instant.now();
+        ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+        verify(tasks).findByStatusAndUpdatedAtBefore(eq(TaskStatus.RUNNING), cutoff.capture(), page.capture());
+        assertThat(cutoff.getValue()).isBetween(
+                scanStarted.minus(Duration.ofMinutes(2)),
+                scanFinished.minus(Duration.ofMinutes(2)));
+        assertThat(page.getValue().getPageNumber()).isZero();
+        assertThat(page.getValue().getPageSize()).isEqualTo(100);
         assertThat(task.getStatus()).isEqualTo(TaskStatus.RETRYING);
         verify(recorder).record(task, TaskStatus.RUNNING, "SCANNER", "Worker heartbeat timed out");
         verify(rabbit).convertAndSend(RabbitTopology.TASK_EXCHANGE, RabbitTopology.RETRY_KEY,

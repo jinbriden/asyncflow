@@ -16,8 +16,37 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: maven
+      - name: Verify Docker is available
+        run: docker info
       - name: Compile, test and enforce coverage gate
         run: mvn -B verify
+      - name: Verify Docker-backed suites actually ran
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          suites = [
+              "io.github.asyncflow.pipeline.AsyncPipelineIntegrationTest",
+              "io.github.asyncflow.service.DatabaseIdempotencyConflictIntegrationTest",
+              "io.github.asyncflow.idempotency.RedisIdempotencyStoreIntegrationTest",
+              "io.github.asyncflow.reliability.InfrastructureReliabilityTest",
+          ]
+          failures = []
+          for suite in suites:
+              report = Path("target/surefire-reports") / f"TEST-{suite}.xml"
+              if not report.is_file():
+                  failures.append(f"{suite}: missing Surefire report")
+                  continue
+              root = ET.parse(report).getroot()
+              tests = int(root.attrib.get("tests", "0"))
+              skipped = int(root.attrib.get("skipped", "0"))
+              if tests == 0 or skipped != 0:
+                  failures.append(f"{suite}: tests={tests}, skipped={skipped}")
+          if failures:
+              raise SystemExit("Docker-backed verification did not fully run:\n" + "\n".join(failures))
+          print("All required Docker-backed suites executed without skips.")
+          PY
       - name: Upload Allure raw results
         if: always()
         uses: actions/upload-artifact@v4

@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.hasItems;
 
-@Tag("smoke")
+@Tag("assembly-smoke")
 @Tag("reliability")
 @AsyncFlowSupport
 @ActiveProfiles("container")

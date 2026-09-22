@@ -41,9 +41,11 @@ docker compose ps
 这些凭据只用于本机 Compose。不要把默认 token 暴露到公网。
 
 ```powershell
-docker compose down          # 保留 MySQL 数据卷
+docker compose down          # 保留 MySQL、RabbitMQ 和报表数据卷
 docker compose down -v       # 同时删除本项目本地数据
 ```
+
+从未挂载 `rabbitmq-data` 的旧 Compose 配置升级时，新增命名卷不会自动迁移旧容器可写层里的 Broker 数据。升级前应暂停新任务并排空队列；如需保留积压消息，应在保持 RabbitMQ 节点名和 Erlang Cookie 一致的前提下，把旧 `/var/lib/rabbitmq` 迁移到命名卷后再重建容器。
 
 ## 调用示例
 

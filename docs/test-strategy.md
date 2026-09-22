@@ -21,6 +21,7 @@
 
 ```powershell
 mvn test -Psmoke
+mvn test -Passembly-smoke
 mvn test -Pregression
 mvn test -Preliability
 mvn verify
@@ -38,8 +39,8 @@ Testcontainers 用例使用 `disabledWithoutDocker=true`。没有 Docker 时它�
 
 冒烟分两层：
 
-- 快速冒烟（`test` profile / H2）：任务受理和报表业务处理，Listener 与定时器关闭，Worker 由测试代码直接调用。
-- 异步装配冒烟（`AsyncPipelineIntegrationTest`）：开启 Outbox Scheduler 和 RabbitMQ Listener，用 Testcontainers 跑真实 MySQL/Redis/RabbitMQ。没有 Docker 时该用例 skipped，不能算已执行的装配冒烟。
+- 快速冒烟（`mvn test -Psmoke`，`test` profile / H2）：任务受理和报表业务处理，Listener 与定时器关闭，Worker 由测试代码直接调用，不启动容器。
+- 异步装配冒烟（`mvn test -Passembly-smoke`，`AsyncPipelineIntegrationTest`）：开启 Outbox Scheduler 和 RabbitMQ Listener，用 Testcontainers 跑真实 MySQL/Redis/RabbitMQ。没有 Docker 时该用例 skipped，不能算已执行的装配冒烟；CI 会额外检查该类及其他容器可靠性类的 skipped 数必须为 0。
 
 ## 可靠性场景映射
 
