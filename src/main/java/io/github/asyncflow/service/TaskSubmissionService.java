@@ -4,10 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.asyncflow.api.CreateTaskRequest;
 import io.github.asyncflow.api.TaskResponse;
-import io.github.asyncflow.domain.OutboxEvent;
 import io.github.asyncflow.domain.TaskRecord;
 import io.github.asyncflow.idempotency.IdempotencyStore;
-import io.github.asyncflow.repository.OutboxEventRepository;
 import io.github.asyncflow.repository.TaskRepository;
 import io.github.asyncflow.report.ReportPayloadParser;
 import io.micrometer.core.instrument.Counter;
@@ -22,29 +20,26 @@ import java.time.Duration;
 public class TaskSubmissionService {
     private static final Duration IDEMPOTENCY_TTL = Duration.ofHours(24);
     private final TaskRepository tasks;
-    private final OutboxEventRepository outbox;
     private final IdempotencyStore idempotency;
     private final ObjectMapper objectMapper;
-    private final TaskEventRecorder eventRecorder;
     private final ReportPayloadParser reportPayloadParser;
+    private final TaskCreationTransaction creation;
     private final Counter submitted;
     private final Counter deduplicated;
 
-    public TaskSubmissionService(TaskRepository tasks, OutboxEventRepository outbox,
-                                 IdempotencyStore idempotency, ObjectMapper objectMapper,
-                                 MeterRegistry meterRegistry, TaskEventRecorder eventRecorder,
-                                 ReportPayloadParser reportPayloadParser) {
+    public TaskSubmissionService(TaskRepository tasks, IdempotencyStore idempotency,
+                                 ObjectMapper objectMapper, MeterRegistry meterRegistry,
+                                 ReportPayloadParser reportPayloadParser,
+                                 TaskCreationTransaction creation) {
         this.tasks = tasks;
-        this.outbox = outbox;
         this.idempotency = idempotency;
         this.objectMapper = objectMapper;
-        this.eventRecorder = eventRecorder;
         this.reportPayloadParser = reportPayloadParser;
+        this.creation = creation;
         this.submitted = meterRegistry.counter("asyncflow.tasks.submitted");
         this.deduplicated = meterRegistry.counter("asyncflow.tasks.deduplicated");
     }
 
-    @Transactional
     public TaskResponse submit(String key, CreateTaskRequest request) {
         if ("REPORT".equalsIgnoreCase(request.type())) {
             reportPayloadParser.parse(request.payload());
@@ -62,18 +57,20 @@ public class TaskSubmissionService {
         }
 
         try {
-            tasks.saveAndFlush(task);
-            eventRecorder.record(task, null, "API", "Task accepted");
-            outbox.save(OutboxEvent.taskCreated(task.getTaskId(), payload));
+            creation.create(task, payload);
             submitted.increment();
             return TaskResponse.from(task, false);
         } catch (DataIntegrityViolationException ex) {
-            idempotency.release(key, task.getTaskId());
-            TaskRecord raced = findExisting(key);
-            if (raced != null) return duplicate(raced);
+            releaseReservation(key, task.getTaskId(), ex);
+            try {
+                TaskRecord raced = findExisting(key);
+                if (raced != null) return duplicate(raced);
+            } catch (RuntimeException lookupFailure) {
+                addSuppressed(ex, lookupFailure);
+            }
             throw ex;
         } catch (RuntimeException ex) {
-            idempotency.release(key, task.getTaskId());
+            releaseReservation(key, task.getTaskId(), ex);
             throw ex;
         }
     }
@@ -100,6 +97,18 @@ public class TaskSubmissionService {
             }
         }
         return null;
+    }
+
+    private void releaseReservation(String key, String taskId, RuntimeException original) {
+        try {
+            idempotency.release(key, taskId);
+        } catch (RuntimeException cleanupFailure) {
+            addSuppressed(original, cleanupFailure);
+        }
+    }
+
+    private void addSuppressed(RuntimeException original, RuntimeException secondary) {
+        if (secondary != original) original.addSuppressed(secondary);
     }
 
     private TaskResponse duplicate(TaskRecord task) {

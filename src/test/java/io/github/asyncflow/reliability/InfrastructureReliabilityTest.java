@@ -1,6 +1,7 @@
 package io.github.asyncflow.reliability;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import io.github.asyncflow.config.RabbitTopology;
 import io.github.asyncflow.domain.OutboxEvent;
 import io.github.asyncflow.domain.TaskRecord;
 import io.github.asyncflow.domain.TaskStatus;
@@ -11,10 +12,13 @@ import io.github.asyncflow.framework.data.TaskFixtures;
 import io.github.asyncflow.framework.extension.AsyncFlowSupport;
 import io.github.asyncflow.framework.scenario.WorkerScenario;
 import io.github.asyncflow.messaging.OutboxPublisher;
+import io.github.asyncflow.messaging.TaskMessage;
 import io.github.asyncflow.repository.OutboxEventRepository;
 import io.github.asyncflow.repository.TaskRepository;
 import io.github.asyncflow.service.TaskProcessor;
 import org.junit.jupiter.api.*;
+import org.springframework.amqp.AmqpException;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -82,6 +86,7 @@ class InfrastructureReliabilityTest {
     @Autowired TaskRepository tasks;
     @Autowired OutboxEventRepository outbox;
     @Autowired OutboxPublisher outboxPublisher;
+    @Autowired RabbitTemplate rabbit;
 
     private AsyncFlowApiClient api;
     private WorkerScenario worker;
@@ -207,6 +212,50 @@ class InfrastructureReliabilityTest {
 
     @Test
     @Timeout(
+            value = 60,
+            unit = TimeUnit.SECONDS,
+            threadMode = Timeout.ThreadMode.SEPARATE_THREAD
+    )
+    void persistentTaskMessageSurvivesBrokerRestart() throws Exception {
+        purgeRabbitQueues();
+        String taskId = ApiAssertions.taskId(api.submit(
+                TaskFixtures.key("rabbit-restart-"),
+                ReportTestDataFactory.containerReportBody()));
+
+        outboxPublisher.publishPending();
+
+        await()
+                .pollInterval(Duration.ofMillis(250))
+                .atMost(Duration.ofSeconds(8))
+                .untilAsserted(() -> {
+                    assertThat(publishedEvent(taskId).getPublishedAt()).isNotNull();
+                    assertThat(taskQueueMessageCount()).isEqualTo(1);
+                });
+
+        RABBIT.getDockerClient()
+                .restartContainerCmd(RABBIT.getContainerId())
+                .withTimeout(10)
+                .exec();
+
+        await()
+                .pollInterval(Duration.ofMillis(500))
+                .atMost(Duration.ofSeconds(20))
+                .untilAsserted(() ->
+                        assertThat(RABBIT.execInContainer("rabbitmq-diagnostics", "-q", "ping").getExitCode())
+                                .isZero());
+
+        await()
+                .pollInterval(Duration.ofMillis(500))
+                .atMost(Duration.ofSeconds(20))
+                .ignoreExceptionsInstanceOf(AmqpException.class)
+                .untilAsserted(() -> assertThat(taskQueueMessageCount()).isEqualTo(1));
+
+        assertThat(rabbit.receiveAndConvert(RabbitTopology.TASK_QUEUE))
+                .isEqualTo(new TaskMessage(taskId));
+    }
+
+    @Test
+    @Timeout(
             value = 15,
             unit = TimeUnit.SECONDS,
             threadMode = Timeout.ThreadMode.SEPARATE_THREAD
@@ -260,6 +309,31 @@ class InfrastructureReliabilityTest {
 
     private TaskRecord queuedTask(String type, int maxAttempts, int failures, String payload) {
         return tasks.save(TaskFixtures.queued(TaskFixtures.key("worker-"), type, payload, maxAttempts, failures));
+    }
+
+    private OutboxEvent publishedEvent(String taskId) {
+        return outbox.findAll().stream()
+                .filter(event -> event.getAggregateId().equals(taskId))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private void purgeRabbitQueues() {
+        rabbit.execute(channel -> {
+            channel.queuePurge(RabbitTopology.RETRY_QUEUE);
+            channel.queuePurge(RabbitTopology.DEAD_LETTER_QUEUE);
+            channel.queuePurge(RabbitTopology.TASK_QUEUE);
+            return null;
+        });
+    }
+
+    private int taskQueueMessageCount() {
+        Integer count = rabbit.execute(channel ->
+                channel.queueDeclarePassive(RabbitTopology.TASK_QUEUE).getMessageCount());
+        if (count == null) {
+            throw new IllegalStateException("RabbitMQ did not return a task queue message count");
+        }
+        return count;
     }
 
     private static synchronized ToxiproxyContainer.ContainerProxy mysqlProxy() {

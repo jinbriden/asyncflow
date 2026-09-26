@@ -41,9 +41,11 @@ docker compose ps
 这些凭据只用于本机 Compose。不要把默认 token 暴露到公网。
 
 ```powershell
-docker compose down          # 保留 MySQL 数据卷
+docker compose down          # 保留 MySQL、RabbitMQ 和报表数据卷
 docker compose down -v       # 同时删除本项目本地数据
 ```
+
+从未挂载 `rabbitmq-data` 的旧 Compose 配置升级时，新增命名卷不会自动迁移旧容器可写层里的 Broker 数据。升级前应暂停新任务并排空队列；如需保留积压消息，应在保持 RabbitMQ 节点名和 Erlang Cookie 一致的前提下，把旧 `/var/lib/rabbitmq` 迁移到命名卷后再重建容器。
 
 ## 调用示例
 
@@ -104,15 +106,15 @@ mvn verify
 ./scripts/verify.ps1 -Suite reliability
 ```
 
-`mvn verify` 会跑单元测试、API 测试、业务闭环、并发幂等，以及（Docker 可用时）Testcontainers 可靠性用例，并生成：
+`mvn verify` 会跑单元测试、API 测试、业务闭环、并发幂等，以及（Docker 可用时）异步装配冒烟和 Testcontainers 可靠性用例，并生成：
 
 - `target/surefire-reports`：逐类结果和失败栈
 - `target/allure-results`：Allure 原始证据（`allure serve target/allure-results`）
 - `target/site/jacoco/index.html`：JaCoCo 报告
 
-Docker 不可用时，`InfrastructureReliabilityTest` 会显示 skipped，不能算作已执行的可靠性用例。CI 要求总体行覆盖率不低于 70%；新增业务代码若无对应测试会让构建失败。
+Docker 不可用时，`AsyncPipelineIntegrationTest`、`DatabaseIdempotencyConflictIntegrationTest`、`RedisIdempotencyStoreIntegrationTest` 和 `InfrastructureReliabilityTest` 会显示 skipped，不能算作已执行的装配冒烟或可靠性用例。CI 要求总体行覆盖率不低于 70%；新增业务代码若无对应测试会让构建失败。
 
-一次带 Docker 的完整运行结果（2026-08-17）：91 条通过，0 失败 / 0 错误 / 0 跳过；JaCoCo 行覆盖率 84.76%。当前数字以当次 `mvn verify` 为准。
+一次带 Docker 的完整运行结果（2026-09-15）：109 条通过，0 失败 / 0 错误 / 0 跳过；JaCoCo 行覆盖率 92.02%、分支覆盖率 71.53%。当前数字以当次 `mvn verify` 为准。
 
 | 层级 | 主要位置 |
 | --- | --- |
@@ -120,10 +122,14 @@ Docker 不可用时，`InfrastructureReliabilityTest` 会显示 skipped，不能
 | Worker | `TaskProcessorTest` |
 | REST API | `TaskApiIntegrationTest`（REST Assured） |
 | 报表业务闭环 | `ReportBusinessFlowIntegrationTest` |
+| 异步装配冒烟 | `AsyncPipelineIntegrationTest`（Outbox → RabbitMQ → Listener） |
+| 超时扫描 | `StaleTaskScannerTest` |
 | 并发幂等 | `ConcurrentIdempotencyIntegrationTest`（100 个相同 Key，1 条任务 / 1 条 Outbox） |
+| 数据库唯一键竞态 | `DatabaseIdempotencyConflictIntegrationTest`（真实 MySQL，连续 3 次竞争） |
+| 幂等失败补偿 | `TaskSubmissionServiceFailureTest`、`TaskSubmissionRollbackIntegrationTest`、`RedisIdempotencyStoreTest`、`RedisIdempotencyStoreIntegrationTest`、`InMemoryIdempotencyStoreTest` |
 | 基础设施 | `InfrastructureReliabilityTest`（Testcontainers + Toxiproxy + WireMock） |
 
-可靠性用例覆盖 Redis 断连后的唯一约束兜底、RabbitMQ 断连后的 Outbox 补偿投递、下游连续超时后的退避重试，以及持续失败进入 DEAD。并发用例跑在测试 profile 上，验证的是提交路径幂等，不是全链路压测。
+可靠性用例覆盖 Redis 断连后的单请求数据库降级、两个请求越过预占后的真实 MySQL 唯一键兜底、Outbox 仓储故障时的数据库回滚与幂等释放、Redis Lua 原子比较删除、RabbitMQ 断连后的 Outbox 补偿投递、下游连续超时后的退避重试，以及持续失败进入 DEAD。协调层并发用例跑在测试 profile 上；数据库唯一键竞态用例改写数据源为临时 MySQL，并使用可控屏障确保两个请求都尝试插入。
 
 ## 接口
 

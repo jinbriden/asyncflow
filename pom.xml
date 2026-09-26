@@ -200,6 +200,10 @@
             <properties><groups>smoke</groups></properties>
         </profile>
         <profile>
+            <id>assembly-smoke</id>
+            <properties><groups>assembly-smoke</groups></properties>
+        </profile>
+        <profile>
             <id>regression</id>
             <properties><groups>regression</groups></properties>
         </profile>
