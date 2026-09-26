@@ -19,9 +19,16 @@ public class AsyncFlowApiClient {
     }
 
     public Response submit(String idempotencyKey, String body) {
+        return submit(idempotencyKey, body, null);
+    }
+
+    public Response submit(String idempotencyKey, String body, String internalToken) {
         RequestSpecification spec = json();
         if (idempotencyKey != null) {
             spec.header(IDEMPOTENCY_KEY_HEADER, idempotencyKey);
+        }
+        if (internalToken != null) {
+            spec.header(INTERNAL_TOKEN_HEADER, internalToken);
         }
         return record(spec.body(body).when().post("/api/tasks"));
     }
@@ -62,7 +69,15 @@ public class AsyncFlowApiClient {
         return record(spec().queryParam("size", size).when().get("/api/tasks"));
     }
 
-    public Response compensate(String taskId) {
+    public Response compensate(String taskId, String internalToken) {
+        RequestSpecification spec = spec();
+        if (internalToken != null) {
+            spec.header(INTERNAL_TOKEN_HEADER, internalToken);
+        }
+        return record(spec.when().post("/internal/tasks/{taskId}/compensate", taskId));
+    }
+
+    public Response publicCompensate(String taskId) {
         return record(spec().when().post("/api/tasks/{taskId}/compensate", taskId));
     }
 
