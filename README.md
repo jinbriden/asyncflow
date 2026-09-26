@@ -9,7 +9,7 @@
 - JUnit 5、REST Assured、Testcontainers、WireMock、Toxiproxy
 - Docker Compose、GitHub Actions、JaCoCo 覆盖率门禁
 
-设计说明见 [架构与一致性](docs/architecture.md)，测试范围见 [测试策略](docs/test-strategy.md)。
+设计说明见 [架构与一致性](docs/architecture.md)，测试范围见 [测试策略](docs/test-strategy.md)，独立前端接入见 [前后端协作约定](docs/frontend-collaboration.md)。
 
 ## 业务怎么走
 
@@ -39,6 +39,8 @@ docker compose ps
 | Grafana | http://localhost:3000 | `admin` / `asyncflow` |
 
 这些凭据只用于本机 Compose。不要把默认 token 暴露到公网。
+
+前端协作使用的机器可读契约位于 `http://localhost:8080/v3/api-docs/frontend`，Swagger UI 位于 `http://localhost:8080/swagger-ui.html`。该分组只暴露普通前端需要的业务接口，不包含内部重放、补偿和故障注入能力。
 
 ```powershell
 docker compose down          # 保留 MySQL、RabbitMQ 和报表数据卷

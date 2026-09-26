@@ -55,6 +55,11 @@ public final class ReportTestDataFactory {
         return "{\"type\":\"REPORT\",\"payload\":{},\"simulateFailures\":11}";
     }
 
+    public static String reportBodyWithSimulatedFailures(int simulateFailures) {
+        return validReportBody("fault-injection-report")
+                .replace("\"maxAttempts\": 3", "\"maxAttempts\": 3, \"simulateFailures\": " + simulateFailures);
+    }
+
     public static String containerReportBody() {
         return "{\"type\":\"REPORT\",\"payload\":{\"reportName\":\"container-report\",\"requestedBy\":\"qa@example.com\",\"records\":[{\"orderId\":\"SO-C1\",\"region\":\"East\",\"product\":\"Keyboard\",\"quantity\":1,\"unitPrice\":199.50}]},\"maxAttempts\":3,\"simulateFailures\":0}";
     }

@@ -27,6 +27,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import static io.github.asyncflow.framework.client.AsyncFlowApiClient.DEFAULT_INTERNAL_TOKEN;
+import static io.github.asyncflow.framework.data.ReportTestDataFactory.reportBodyWithSimulatedFailures;
 import static io.github.asyncflow.framework.data.ReportTestDataFactory.validReportBody;
 import static io.github.asyncflow.framework.data.TaskFixtures.TRACE_ID;
 
@@ -83,7 +84,7 @@ class TaskApiIntegrationTest {
 
     @Test
     void missingIdempotencyKeyIsRejected() {
-        ApiAssertions.assertStatus(api.submit(null, validBody()), 400);
+        ApiAssertions.assertErrorCode(api.submit(null, validBody()), 400, "VALIDATION_FAILED");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -136,7 +137,30 @@ class TaskApiIntegrationTest {
     @Test
     void compensationClosesDeadTask() {
         TaskRecord task = scenario.saveDeadTask(key());
-        ApiAssertions.assertCompensated(api.compensate(task.getTaskId()));
+        ApiAssertions.assertCompensated(api.compensate(task.getTaskId(), DEFAULT_INTERNAL_TOKEN));
+    }
+
+    @Test
+    void compensationRequiresInternalToken() {
+        TaskRecord task = scenario.saveDeadTask(key());
+        ApiAssertions.assertErrorCode(api.compensate(task.getTaskId(), null), 401, "UNAUTHORIZED");
+    }
+
+    @Test
+    void publicCompensationRouteIsUnavailable() {
+        TaskRecord task = scenario.saveDeadTask(key());
+        ApiAssertions.assertStatus(api.publicCompensate(task.getTaskId()), 404);
+    }
+
+    @Test
+    void failureInjectionRequiresInternalToken() {
+        ApiAssertions.assertErrorCode(api.submit(key(), reportBodyWithSimulatedFailures(1)),
+                401, "UNAUTHORIZED");
+    }
+
+    @Test
+    void authorizedFailureInjectionIsAccepted() {
+        ApiAssertions.assertAccepted(api.submit(key(), reportBodyWithSimulatedFailures(1), DEFAULT_INTERNAL_TOKEN));
     }
 
     @Test
